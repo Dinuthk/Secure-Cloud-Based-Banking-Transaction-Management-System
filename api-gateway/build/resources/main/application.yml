@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      # CORS is now handled by CorsConfig.java
+
+# Service URLs for functional routing
+service:
+  auth:
+    url: ${SERVICE_AUTH_URL:http://localhost:8081}
+  account:
+    url: ${SERVICE_ACCOUNT_URL:http://localhost:8082}
+  transaction:
+    url: ${TRANSACTION_SERVICE_URL:http://localhost:8083}
+  audit:
+    url: ${SERVICE_AUDIT_URL:http://localhost:8084}
+  notification:
+    url: ${SERVICE_NOTIFICATION_URL:http://localhost:8085}
+
+server:
+  port: 8000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway
+  endpoint:
+    health:
+      show-details: always
+
+# Resilience4j Configuration
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-size: 10
+        permitted-number-of-calls-in-half-open-state: 3
+        wait-duration-in-open-state: 5s
+        failure-rate-threshold: 50
+    instances:
+      authServiceCircuitBreaker:
+        base-config: default
+      accountServiceCircuitBreaker:
+        base-config: default
+      transactionServiceCircuitBreaker:
+        base-config: default
+      auditServiceCircuitBreaker:
+        base-config: default
+      notificationServiceCircuitBreaker:
+        base-config: default
