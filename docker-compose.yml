@@ -1,0 +1,216 @@
+
+services:
+  # ---------------- Infrastructure ---------------- #
+  mysql-db:
+    image: mysql:8.0
+    container_name: banking-mysql
+    ports:
+      - "3308:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - banking-network
+
+  mongodb:
+    image: mongo:latest
+    container_name: banking-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGODB_ADMIN_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGODB_ADMIN_PASS}
+    volumes:
+      - mongodb_data:/data/db
+      - ./init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    restart: always
+    networks:
+      - banking-network
+
+  redis:
+    image: redis:alpine
+    container_name: banking-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+    networks:
+      - banking-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: banking-rabbitmq
+    ports:
+      - "5672:5672"   # AMQP protocol
+      - "15672:15672" # Management UI
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    restart: always
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - banking-network
+
+  # ---------------- Microservices ---------------- #
+  api-gateway:
+    build: 
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: banking-api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SERVICE_AUTH_URL=http://auth-service:8081
+      - SERVICE_ACCOUNT_URL=http://account-service:8082
+      - SERVICE_TRANSACTION_URL=http://transaction-service:8083
+      - SERVICE_AUDIT_URL=http://audit-service:8084
+      - SERVICE_NOTIFICATION_URL=http://notification-service:8085
+    depends_on:
+      - auth-service
+      - account-service
+      - transaction-service
+      - audit-service
+      - notification-service
+    restart: always
+    networks:
+      - banking-network
+
+  auth-service:
+    build:
+      context: ./Backend/auth-service
+      dockerfile: Dockerfile
+    container_name: banking-auth-service
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql-db:3306/authService
+      - SPRING_DATASOURCE_USERNAME=authService_user
+      - SPRING_DATASOURCE_PASSWORD=${AUTH_DB_PASS}
+    restart: always
+    networks:
+      - banking-network
+
+  account-service:
+    build: 
+      context: ./Backend/account-service
+      dockerfile: Dockerfile
+    container_name: banking-account-service
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql-db:3306/accountService
+      - SPRING_DATASOURCE_USERNAME=accountService_user
+      - SPRING_DATASOURCE_PASSWORD=${ACCOUNT_DB_PASS}
+    restart: always
+    networks:
+      - banking-network
+
+  transaction-service:
+    build: 
+      context: ./Backend/transaction-service
+      dockerfile: Dockerfile
+    container_name: banking-transaction-service
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql-db:3306/transactionService
+      - SPRING_DATASOURCE_USERNAME=transactionService_user
+      - SPRING_DATASOURCE_PASSWORD=${TRANSACTION_DB_PASS}
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_RABBITMQ_HOST=rabbitmq
+      - ACCOUNT_SERVICE_URL=http://account-service:8082
+    restart: always
+    networks:
+      - banking-network
+
+  audit-service:
+    build: 
+      context: ./Backend/audit-service
+      dockerfile: Dockerfile
+    container_name: banking-audit-service
+    depends_on:
+      mongodb:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATA_MONGODB_URI=mongodb://${MONGODB_ADMIN_USER}:${MONGODB_ADMIN_PASS}@mongodb:27017/auditService?authSource=admin
+      - SPRING_RABBITMQ_HOST=rabbitmq
+    restart: always
+    networks:
+      - banking-network
+
+  notification-service:
+    build: 
+      context: ./Backend/notification-service
+      dockerfile: Dockerfile
+    container_name: banking-notification-service
+    depends_on:
+      mongodb:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATA_MONGODB_URI=mongodb://${MONGODB_ADMIN_USER}:${MONGODB_ADMIN_PASS}@mongodb:27017/notificationService?authSource=admin
+      - SPRING_RABBITMQ_HOST=rabbitmq
+      - MAIL_USERNAME=${MAIL_USERNAME}
+      - MAIL_PASSWORD=${MAIL_PASSWORD}
+    restart: always
+    networks:
+      - banking-network
+
+  frontend:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+    container_name: banking-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - api-gateway
+    restart: always
+    networks:
+      - banking-network
+networks:
+  banking-network:
+    name: banking-network
+    driver: bridge
+
+
+volumes:
+  mysql_data:
+    name: banking_mysql_data
+  redis_data:
+    name: banking_redis_data
+  rabbitmq_data:
+    name: banking_rabbitmq_data
+  mongodb_data:
+    name: banking_mongodb_data
